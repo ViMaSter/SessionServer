@@ -32,7 +32,7 @@
   },
   "homepage": "https://github.com/ViMaSter/sessionserver",
   "devDependencies": {
-    "@types/jest": "^26.0.19",
+    "@types/jest": "^27.4.1",
     "@types/node": "^14.14.20",
     "@types/websocket": "1.0.1",
     "dts-bundle": "^0.7.3",
