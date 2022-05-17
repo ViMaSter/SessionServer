@@ -48,6 +48,21 @@ class Session {
         this.currentSessionData = { ...this.defaultSessionData};
     }
 
+    private lastTickAt : number = new Date().getTime();
+    public Tick()
+    {
+        const deltaTime : number = (new Date().getTime() - this.lastTickAt) / 1000;
+
+        this.connectedPlayers.forEach((playerData : any, playerID) => {
+            playerData.position.x += playerData.force.x * deltaTime;
+            playerData.position.y += playerData.force.y * deltaTime;
+            playerData.force.x *= 0.9;
+            playerData.force.y *= 0.9;
+            this.UpdatePlayerByID(playerID, playerData); 
+        });
+        this.lastTickAt = new Date().getTime();
+    }
+
     // player handling
     public ForEachPlayer(callback : ForEachPlayerCallback) : void {
         if (this.connectedPlayers.size <= 0) {
@@ -90,9 +105,7 @@ class Session {
     // player data handling
     public GetPlayerDataByID(playerID : number) : IPlayerData {
         if (!this.HasPlayerIDInSession(playerID)) {
-            console.error(`[SessionServer] Player ${playerID} is not part of session ${this.ID} and therefore can't receive his data (current players: ${this.connectedPlayers.keys()})`);
-
-            return new IPlayerData();
+            console.error(`[SessionServer] Player ${playerID} is not part of session ${this.ID} and therefore can't receive his data (current players: ${JSON.stringify(this.connectedPlayers.keys())})`);
         }
 
         return <IPlayerData>this.connectedPlayers.get(playerID);
@@ -147,6 +160,7 @@ class Session {
     }
 }
 
+import { throws } from 'assert';
 import * as http from 'http';
 import * as ws from 'ws';
 
@@ -175,9 +189,17 @@ export class SessionServer {
         this.wsServer = new ws.Server({server: this.httpServer});
     }
 
+    
+    public static normalizeVector(x : number, y : number) {
+        var length = Math.sqrt(x*x+y*y); //calculating length
+        return [x/length, y/length]
+    }
+
     public static async Create(port : number) : Promise<SessionServer> {
         return new Promise<SessionServer>((resolve : Function, reject : Function) : void => {
             const newServer : SessionServer = new SessionServer(port);
+
+            setInterval(newServer.Tick.bind(newServer), 1000/30);
 
             newServer.setupCommands();
 
@@ -196,6 +218,72 @@ export class SessionServer {
 
             newServer.httpServer.listen(newServer.port);
         });
+    }
+    
+    Tick() {
+        this.sessions.forEach(session => session.Tick());
+        this.player.forEach((playerAWS, playerAID) => {
+            this.player.forEach((playerBWS, playerBID) => {
+                if (playerAID == playerBID)
+                {
+                    return;
+                }
+                if (this.sessionIDByPlayerID.get(playerAID) != this.sessionIDByPlayerID.get(playerBID))
+                {
+                    return;
+                }
+
+                const playerSessionID : number = <number>this.sessionIDByPlayerID.get(playerBID);
+                const playerSession : Session = <Session>this.sessions.get(playerSessionID);
+                if (playerSession == null)
+                {
+                    return;
+                }
+
+                const playerAData = <any>playerSession.GetPlayerDataByID(playerAID);
+                const playerBData = <any>playerSession.GetPlayerDataByID(playerBID);
+
+                const distance = Math.sqrt(Math.pow (playerAData.position.x-playerBData.position.x, 2) + Math.pow (playerAData.position.y-playerBData.position.y, 2));
+                if (distance <= 20)
+                {
+                    const direction = SessionServer.normalizeVector(playerAData.position.x - playerBData.position.x, playerAData.position.y - playerBData.position.y);
+
+                    const dividedForce = [
+                        (playerAData.force.x + playerBData.force.x) / 2,
+                        (playerAData.force.y + playerBData.force.y) / 2
+                    ];
+
+                    const playerAIsFaster = (Math.abs(playerAData.force.x) + Math.abs(playerAData.force.y)) > (Math.abs(playerBData.force.x) + Math.abs(playerBData.force.y));
+
+                    playerAData.force.x = dividedForce[0];
+                    playerAData.force.y = dividedForce[1];
+                    playerBData.force.x = dividedForce[0];
+                    playerBData.force.y = dividedForce[1];
+
+                    if (playerAIsFaster)
+                    {
+                        playerAData.force.x *= -1;
+                        playerAData.force.y *= -1;
+                    }
+                    else
+                    {
+                        playerBData.force.x *= -1;
+                        playerBData.force.y *= -1;
+                    }
+
+                    playerAData.position.x += direction[0] * distance * 0.1;
+                    playerAData.position.y += direction[1] * distance * 0.1;
+                    playerBData.position.x += -direction[0] * distance * 0.1;
+                    playerBData.position.y += -direction[1] * distance * 0.1;
+                }
+
+                playerSession.UpdatePlayerByID(playerAID, playerAData);
+                playerSession.UpdatePlayerByID(playerBID, playerBData);
+            })
+        })
+        this.player.forEach((playerData, playerID) => {
+            this.sendPlayerUpdateToAllPlayers(playerID);
+        })
     }
 
     public async Shutdown() : Promise<void> {
@@ -278,7 +366,7 @@ export class SessionServer {
             public player : Object = new Object();
         }
         this.commands.set('updateSession', (playerID : number, jsonMessage : UpdateSessionPayload) : void => {
-            console.log(`[SessionServer] Player ${playerID} attempting to update his session (${this.sessionIDByPlayerID.has(playerID) ? this.sessionIDByPlayerID.get(playerID) : 'no session'})`);
+            // console.log(`[SessionServer] Player ${playerID} attempting to update his session (${this.sessionIDByPlayerID.has(playerID) ? this.sessionIDByPlayerID.get(playerID) : 'no session'})`);
             if (!validateSessionIDHelper(playerID, 'sessionUpdate')) {
                 return;
             }
@@ -287,7 +375,6 @@ export class SessionServer {
             const playerSession : Session = <Session>this.sessions.get(playerSessionID);
 
             playerSession.UpdateSessionData(playerID, jsonMessage.session, jsonMessage.player);
-
             playerSession.ForEachPlayer((currentPlayerID : number) : void => {
                 console.log(`[SessionServer] INFO ${currentPlayerID} by ${playerID}`);
                 this.sendMessageToPlayer(currentPlayerID, JSON.stringify({
@@ -318,15 +405,7 @@ export class SessionServer {
                 }));
             }
 
-            const updatedPlayerID : number = playerID;
-            playerSession.ForEachPlayer((currentPlayerID : number) : void => {
-                this.sendMessageToPlayer(currentPlayerID, JSON.stringify({
-                    command: 'playerUpdate',
-                    error: 0,
-                    playerID: updatedPlayerID,
-                    player: playerSession.GetPlayerDataByID(updatedPlayerID)
-                }));
-            });
+            this.sendPlayerUpdateToAllPlayers(playerID);
         });
 
         class JoinSessionPayload extends CommandPayload {
@@ -383,7 +462,11 @@ export class SessionServer {
             }
 
             this.sessionIDByPlayerID.set(playerID, jsonMessage.sessionID);
-
+            const playerData : any = Object.assign({}, requestedSession.GetDefaultPlayerData());
+            playerData.name += playerID;
+            playerData.position.x = (playerID % 10) * 20;
+            requestedSession.UpdatePlayerByID(playerID, playerData);
+        
             // send session state to new player...
             this.sendMessageToPlayer(playerID, JSON.stringify({
                 command: 'sessionJoin',
@@ -495,7 +578,7 @@ export class SessionServer {
         this.player.set(playerID, socket);
         this.sessionIDByPlayerID.set(playerID, -1);
 
-        console.log(`[SessionServer] New connection detected - assigning player ID: playerID`);
+        console.log(`[SessionServer] New connection detected - assigning player ID: ${playerID}`);
 
         socket.on('message', this.generatePlayerMessageHandler(playerID));
         socket.on('close', this.generatePlayerCloseHandler(playerID));
@@ -547,6 +630,24 @@ export class SessionServer {
         }
     }
 
+    private sendPlayerUpdateToAllPlayers(playerID : number) : void {
+        const playerSessionID : number = <number>this.sessionIDByPlayerID.get(playerID);
+        if (playerSessionID == -1)
+        {
+            return;
+        }
+
+        const playerSession : Session = <Session>this.sessions.get(playerSessionID);
+        playerSession.ForEachPlayer((currentPlayerID : number) : void => {
+            this.sendMessageToPlayer(currentPlayerID, JSON.stringify({
+                command: 'playerUpdate',
+                error: 0,
+                playerID: playerID,
+                player: playerSession.GetPlayerDataByID(playerID)
+            }));
+        });
+    }
+
     private sendMessageToPlayer(playerID : number, message : string) : boolean {
         if (!this.player.has(playerID)) {
             console.error(`[SessionServer] No player with ID ${playerID} is connected`);
@@ -555,8 +656,8 @@ export class SessionServer {
         }
         const playerWebsocket : ws = <ws>this.player.get(playerID);
 
-        console.log(`Message to ${playerID}`);
-        console.log(message);
+        // console.log(`Message to ${playerID}`);
+        // console.log(message);
         if (playerWebsocket.readyState !== 1) {
             console.warn(`[SessionServer] Can\'t send message to player, since the connection is (already) unavailable - readyState: ${playerWebsocket.readyState}`);
 
