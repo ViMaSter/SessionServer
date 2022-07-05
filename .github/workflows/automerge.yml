@@ -20,6 +20,10 @@ on:
 jobs:
   automerge:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write # allows dependabot PRs to set pull request checks
+      contents: read
+      pull-requests: write
     steps:
       - name: automerge
         uses: "pascalgn/automerge-action@v0.13.0"
