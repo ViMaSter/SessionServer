@@ -37,7 +37,7 @@
     "@types/websocket": "1.0.10",
     "dts-bundle": "^0.7.3",
     "http-shutdown": "^1.2.2",
-    "jest": "^26.6.3",
+    "jest": "^29.7.0",
     "jest-extended": "^4.0.0",
     "jest-junit": "^16.0.0",
     "ts-jest": "^26.4.4",
